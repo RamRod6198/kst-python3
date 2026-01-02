@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 import time
 
 
@@ -44,7 +50,7 @@ for x in [.125, 0.375, 0.625, 0.875]:
 client.new_tab()
 client.set_tab_text("Third")
 
-for i in xrange(1,26):
+for i in range(1,26):
   p = client.new_plot(font_size = 8, auto_position = False)
   p.subplot(5,5,i)
 

@@ -1,13 +1,12 @@
-PyKst is tested on Python 2.7 and does not work with Python 3.x.
+PyKst is tested on Python 3.x and does not work with Python 2.x.
 It has not been tested on mac or windows, though it c/should work.
 
-PyKst needs NumPy and scipy 
+PyKst needs NumPy, PyQt5, and the KST2 executable.
 The newest version of PyKst needs the newest version of kst.
 
 Under Linux, install with:
-  sudo python2.7 setup.py install
+  pip install .
 
 Documentation and the latest version of pykst can be found on the kst web page kst.kde.org
 
 ----------------
-

@@ -1,14 +1,19 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 # demonstrate buttons and line inputs:
 # plot an equation the user inputs
 
-import sip
-sip.setapi('QString', 1)
-import pykst as kst
 import sys
+
+try:
+    import pykst as kst
+except ImportError:
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 import random
-from PyQt4 import QtCore, QtNetwork, QtGui
+from PyQt5 import QtCore, QtNetwork
+from PyQt5.QtWidgets import QApplication
 
 class KsNspire:
   text=""
@@ -24,18 +29,19 @@ class KsNspire:
     self.genVec=client.new_generated_vector(-100,100,1000)
     
   def create(self):
-    eq = client.new_equation(self.genVec, self.text)
-    c = client.new_curve(eq.x(), eq.y())
+    eq = self.client.new_equation(self.genVec, self.text)
+    c = self.client.new_curve(eq.x(), eq.y())
     self.plot.add(c)
 
   def changeValue(self):
-    strx=QtCore.QString(self.s2.read(8000))
-    if strx.contains("valueSet:"):
-      strx.remove("valueSet:")
-      self.text=str(strx)
+    data = self.s2.read(8000)
+    strx = bytes(data).decode('utf-8')
+    if "valueSet:" in strx:
+      strx = strx.replace("valueSet:", "")
+      self.text = strx
 
 client=kst.Client()
-app=QtGui.QApplication(sys.argv)
+app=QApplication(sys.argv)
 m=KsNspire(client)
 
 app.exec_()

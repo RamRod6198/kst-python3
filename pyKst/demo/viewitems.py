@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 
 client=kst.Client("viewitems")
 
@@ -37,7 +43,7 @@ Label2.set_parent_auto()
 P1.set_pos((0.5,0.5))
 P1.set_fixed_aspect_ratio(True)
 
-print Label2.position(), Label2.dimensions()
+print(Label2.position(), Label2.dimensions())
 
 Label2.set_lock_pos_to_data(True)
 Label2.set_pos((5,0))
