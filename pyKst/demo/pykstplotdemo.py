@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykstplot as plt
+#!/usr/bin/env python3
+try:
+    import pykstplot as plt
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykstplot as plt
 #import matplotlib.pyplot as plt
 import numpy as np
 

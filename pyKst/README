@@ -1,13 +1,120 @@
-PyKst is tested on Python 2.7 and does not work with Python 3.x.
-It has not been tested on mac or windows, though it c/should work.
 
-PyKst needs NumPy and scipy 
-The newest version of PyKst needs the newest version of kst.
+# PyKst Python 3
 
-Under Linux, install with:
-  sudo python2.7 setup.py install
+Python 3 port of PyKst - Python interface to KST plotting application.
 
-Documentation and the latest version of pykst can be found on the kst web page kst.kde.org
+**Original Authors**: KST Developers <kst@kde.org>  
+**Python 3 Migration**: RamRod6198  
+**Original Project**: [kst-plot/kst](https://github.com/kst-plot/kst)  
+**This Fork**: [kst-python3](https://github.com/RamRod6198/kst-python3)  
+**Python 2 Version**: pyKst (deprecated)  
+**This Version**: Python 3.x+ only
 
-----------------
+## Major Changes from Original
+- Full Python 3 migration (3.x+)
+- No Python 2 backward compatibility
+- Fixed semantic issues (integer division, string encoding, etc.)
+- Modern packaging with setuptools
+- Environment-based KST2 executable configuration
 
+
+# PyKst - Python Interface to KST
+
+PyKst is a Python interface to the KST real-time data visualization application.
+It allows you to control KST programmatically, create plots, and work with data.
+
+## Requirements
+
+- Python 3.x or higher
+- NumPy
+- PyQt5
+- KST 2.x plotting application (kst2)
+- python-dotenv (optional, for .env file support)
+
+## KST Executable Configuration
+
+PyKst needs to find the `kst2` executable. Configuration is checked in this order:
+
+### Option 1: Environment Variable (Recommended)
+
+Set the `KST2` environment variable to point to your kst2 executable:
+
+**Windows (PowerShell - permanent):**
+```powershell
+[Environment]::SetEnvironmentVariable("KST2", "C:\path\to\kst2.exe", "User")
+```
+
+**Windows (PowerShell - session only):**
+```powershell
+$env:KST2 = "C:\path\to\kst2.exe"
+```
+
+**Linux/Mac:**
+```bash
+export KST2=/path/to/kst2
+# Add to ~/.bashrc or ~/.zshrc for persistence
+```
+
+### Option 2: .env File (Development)
+
+Create a `.env` file in your project directory or the pyKst directory:
+
+```
+KST2=C:\path\to\kst2.exe
+```
+
+Requires `python-dotenv` to be installed:
+```bash
+pip install python-dotenv
+```
+
+### Option 3: System PATH
+
+Add the KST bin directory to your system PATH. PyKst will find `kst2` automatically.
+
+## Installation
+
+```bash
+pip install numpy PyQt5
+pip install .
+```
+
+Or for development:
+
+```bash
+pip install -e .
+```
+
+Optional (for .env file support):
+
+```bash
+pip install python-dotenv
+```
+
+## Quick Start
+
+```python
+import pykst as kst
+
+# Connect to KST (starts KST if not running)
+client = kst.Client()
+
+# Create a data vector from a file
+v = client.new_data_vector("datafile.dat", "column1")
+
+# Create a generated vector
+x = client.new_generated_vector(0, 10, 100)
+
+# Create a plot and add a curve
+p = client.new_plot()
+c = client.new_curve(x, v)
+p.add(c)
+```
+
+## Demo Scripts
+
+See the `demo/` folder for example scripts.
+
+## Documentation
+
+Outdated documentation available at: https://kst-plot.kde.org

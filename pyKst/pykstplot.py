@@ -1,4 +1,4 @@
-#!/usr/bin/python2.7
+#!/usr/bin/env python3
 import pykst as kst
 import numpy as _np
 
@@ -33,7 +33,7 @@ def _add_curve_to_plot(P, C):
     V2 = _client.new_editable_vector(C.y, name="Y")
     c1 = _client.new_curve(V1, V2)
 
-    if isinstance(C.f, basestring):
+    if isinstance(C.f, str):
         if '--' in C.f:
             c1.set_line_style(1)
         elif '-.' in C.f:
@@ -281,7 +281,7 @@ def plot(*args, **kwargs):
         C.label = kwargs["label"]
 
     for arg in args:
-        if isinstance(arg, basestring):
+        if isinstance(arg, str):
             C.f = arg
             if (C.y is None) & (isinstance(C.x, _np.ndarray)):
                 C.y = C.x
@@ -300,7 +300,7 @@ def plot(*args, **kwargs):
 
     if (C.y is None) & (isinstance(C.x, _np.ndarray)):
         C.y = C.x
-        C.x = _np.asanyarray([0.0, C.y.size-1.0], dtype=_np.float64)
+        C.x = _np.linspace(0, C.y.size-1, C.y.size, dtype=_np.float64)
     if (isinstance(C.x, _np.ndarray)):
         _add_curve_to_plot(_current_plot, C)
 
@@ -355,8 +355,8 @@ def subplot(*args, **kwargs):
     n = 0
 
     if (len(args) == 1):
-        h = args[0]/100
-        w = (args[0]%100)/10
+        h = args[0]//100
+        w = (args[0]%100)//10
         n = args[0]%10
     elif (len(args) == 3):
         h = args[0]
@@ -366,7 +366,7 @@ def subplot(*args, **kwargs):
         w = h = n = 1
 
     x = (n-1)%w
-    y = (n-1)/w
+    y = (n-1)//w
 
     serial = y + x*100 + h*10000 + w*1000000
 

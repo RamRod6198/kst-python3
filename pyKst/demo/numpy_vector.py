@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 import numpy as np
 
 client=kst.Client("NumpyVector")
@@ -23,27 +29,27 @@ p2.add(c2)
 
 # print out the name of every vector.
 vectors = client.get_vector_list()
-print "----- Vectors: ----------"
+print("----- Vectors: ----------")
 for vector in vectors:
-  print vector.name()
+  print(vector.name())
 
 # print out the name of ediable vectors.
 vectors = client.get_editable_vector_list()
-print "----- Editable Vectors: ----------"
+print("----- Editable Vectors: ----------")
 for vector in vectors:
-  print vector.name()
+  print(vector.name())
 
 # print out the name of generated vectors.
 vectors = client.get_generated_vector_list()
-print "----- Generated Vectors: ----------"
+print("----- Generated Vectors: ----------")
 for vector in vectors:
-  print vector.name()
+  print(vector.name())
   
 # print out every scalar name and value
 scalars = client.get_scalar_list()
-print "----- Scalars: ----------"
+print("----- Scalars: ----------")
 for scalar in scalars:
-  print scalar.name(), scalar.value()
+  print(scalar.name(), scalar.value())
   
 
   

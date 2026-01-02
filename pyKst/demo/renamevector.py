@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 
 client=kst.Client("RenameDemo")
 V1=client.new_data_vector("/home/cbn/programs/KDE/kst_tutorial/gyrodata.dat",
@@ -16,18 +22,18 @@ p1 = client.new_plot(font_size = 12)
 
 p1.add(c1)
 
-print "-------------- Scalar list -------------"
-print client.get_scalar_list()
+print("-------------- Scalar list -------------")
+print(client.get_scalar_list())
 
-print "-------------- Vector list -------------"
+print("-------------- Vector list -------------")
 vectors = client.get_vector_list()
-print vectors
-print "----------"
+print(vectors)
+print("----------")
 
 # change the name of the vector made from field "Column 1"
 for Vname in vectors:
   Vr = client.data_vector(Vname.name())
   if Vr.field() == "Column 2":
-    print "Changing name of ", Vr.name(), " to A Gyro" 
+    print("Changing name of ", Vr.name(), " to A Gyro")
     Vr.set_name("A Gyro")
     

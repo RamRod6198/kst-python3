@@ -11,3 +11,4 @@ tmp*
 po
 po_all
 *~
+.env

@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 
 client=kst.Client("EqHist")
 
@@ -10,10 +16,10 @@ e1 = client.new_equation(v1, "x^2")
 e1.set_x(v4)
 v2 = e1.y()
 v3 = e1.x()
-print "vector 2  name: ", v2.name() 
-print "vector 2 Value at 4th element: ", v2.value(3)
+print("vector 2  name: ", v2.name())
+print("vector 2 Value at 4th element: ", v2.value(3))
 
-print "vector 1 type: ", v1.type_str()
+print("vector 1 type: ", v1.type_str())
 
 c1 = client.new_curve(e1.x(), e1.y())
 c1.set_color("blue")
@@ -49,6 +55,6 @@ L2 = client.new_legend(p2)
 L1.set_font_size(18)
 L2.set_font_color("red")
 
-print "histogram 1 range: ", h1.bin_min(), h1.bin_max()
-print "histogram 1 num bins: ", h1.num_bins()
+print("histogram 1 range: ", h1.bin_min(), h1.bin_max())
+print("histogram 1 num bins: ", h1.num_bins())
 

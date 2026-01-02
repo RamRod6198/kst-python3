@@ -3,6 +3,7 @@ import sys
 #import ctypes
 import atexit
 import os
+import shutil
 import tempfile
 import time
 import subprocess
@@ -12,20 +13,33 @@ from ast import literal_eval
 import numpy as np
 
 try:
-    from PySide import QtNetwork, QtGui
+    from PyQt5 import QtNetwork
+    from PyQt5.QtWidgets import QApplication
 except ImportError as err1:
     try:
-        from PyQt4 import QtNetwork, QtGui
+        from PyQt4 import QtNetwork
+        from PyQt4.QtGui import QApplication
     except ImportError as err2:
-        raise ImportError("{} and {}. One of the two is required.".format(err1, err2))
+        raise ImportError("PyQt5 or PyQt4 required: {} and {}".format(err1, err2))
 
-QtGui.QApplication([""])
+# Global QApplication instance - created lazily
+_qapp = None
+
+def _ensure_qapp():
+    """Ensure QApplication exists (needed for Qt event loop)"""
+    global _qapp
+    if _qapp is None:
+        _qapp = QApplication.instance()
+        if _qapp is None:
+            _qapp = QApplication([""])
+    return _qapp
 
 
 def clean_tmp_file(tmp_file):
     os.remove(tmp_file.name)
 
 def b2str(val):
+    """Convert Python value to Kst command protocol string"""
     if isinstance(val, bool):
         return "True" if val else "False"
     return str(val)
@@ -59,6 +73,8 @@ class Client(object):
     """
 
     def __init__(self, server_name=""):
+        # Ensure QApplication exists for Qt event loop
+        _ensure_qapp()
 
         user_name = getpass.getuser()
 
@@ -72,12 +88,62 @@ class Client(object):
         self.local_socket.waitForConnected(300)
 
         if self.local_socket.state() == QtNetwork.QLocalSocket.UnconnectedState:
-            subprocess.Popen(["kst2", "--serverName="+str(self.server_name)])
-            time.sleep(.5)
+            # Try to find kst2 executable
+            kst2_cmd = self._find_kst2()
+            print(f"Starting KST: {kst2_cmd}")
+            subprocess.Popen([kst2_cmd, "--serverName="+str(self.server_name)])
+            time.sleep(1)
 
+            max_attempts = 30  # 30 attempts * 300ms = ~9 seconds max wait
+            attempts = 0
             while self.local_socket.state() == QtNetwork.QLocalSocket.UnconnectedState:
                 self.local_socket.connectToServer(self.server_name)
                 self.local_socket.waitForConnected(300)
+                attempts += 1
+                if attempts >= max_attempts:
+                    raise RuntimeError(f"Failed to connect to KST server '{self.server_name}' after {max_attempts} attempts")
+
+    def _find_kst2(self):
+        """Find kst2 executable.
+        
+        Search priority:
+            1. KST2 environment variable (can be set via .env file or system)
+            2. System PATH
+        
+        Returns:
+            str: Path to kst2 executable
+            
+        Raises:
+            FileNotFoundError: If kst2 executable cannot be found
+        """
+        # Load .env file if python-dotenv is available (populates os.environ)
+        try:
+            from dotenv import load_dotenv
+            # Search in pykst directory and parent directories
+            load_dotenv()
+        except ImportError:
+            pass  # python-dotenv is optional
+        
+        # Check KST2 environment variable (includes values loaded from .env)
+        kst2_path = os.environ.get('KST2')
+        if kst2_path:
+            if os.path.isfile(kst2_path):
+                return kst2_path
+            raise FileNotFoundError(
+                f"KST2 environment variable points to non-existent file: {kst2_path}"
+            )
+        
+        # Try system PATH
+        kst2_path = shutil.which("kst2")
+        if kst2_path:
+            return kst2_path
+        
+        raise FileNotFoundError(
+            "Could not find kst2 executable. Either:\n"
+            "  1. Set KST2 environment variable to the path of kst2.exe\n"
+            "  2. Create a .env file with: KST2=C:\\path\\to\\kst2.exe\n"
+            "  3. Add kst2 to your system PATH"
+        )
 
     def send(self, command):
         """ Sends a command to kst and returns a response.
@@ -87,17 +153,44 @@ class Client(object):
         list kst uses won't change. Instead use the convenience classes
         included with pykst.
         """
+        if isinstance(command, str):
+            command = command.encode('utf-8')
         self.local_socket.write(command)
         self.local_socket.flush()
         self.local_socket.waitForReadyRead(300000)
         return_message = self.local_socket.readAll()
         return return_message
 
+    def _decode_response(self, response):
+        """ Decode QByteArray response to string """
+        if hasattr(response, 'data'):
+            # PyQt5/PyQt4 QByteArray
+            data = bytes(response).decode('utf-8', errors='replace')
+        else:
+            data = str(response)
+        return data
+
+    def _extract_handle(self, response):
+        """ Extract handle from response by finding 'ing ' and returning substring """
+        data = self._decode_response(response)
+        idx = data.find("ing ")
+        if idx >= 0:
+            return data[idx+4:].strip()
+        return data.strip()
+
     def send_si(self, handle, command):
+        if isinstance(handle, bytes):
+            handle = handle.decode('utf-8')
+        handle = handle.strip()
         self.send(b2str("beginEdit("+handle+")"))
-        return_message = self.send(command)
+        return_message = self.send(b2str(command))
         self.send(b2str("endEdit()"))
-        return return_message
+        return self._decode_response(return_message)
+
+    def send_si_bool(self, handle, command):
+        """Send command and parse boolean response robustly"""
+        response = self.send_si(handle, command).strip()
+        return response.lower() in ('true', '1', 'yes')
 
     def test_command(self):
         self.send("testCommand()")
@@ -111,11 +204,11 @@ class Client(object):
 
     def open_kst_file(self, filename):
         """ open a .kst file in kst. """
-        self.send("fileOpen("+b2str(filename)+")")
+        self.send("fileOpen("+filename+")")
 
     def save_kst_file(self, filename):
         """ save a .kst file in kst. """
-        self.send("fileSave("+b2str(filename)+")")
+        self.send("fileSave("+filename+")")
 
     def export_graphics_file(self, filename, graphics_format=None, width=1280, height=1024,
                              display=2, all_tabs=False, autosave_period=0):
@@ -144,8 +237,8 @@ class Client(object):
         if graphics_format is None:
             graphics_format = os.path.splitext(filename)[1][1:].strip().lower()
 
-        self.send("exportGraphics("+str(filename)+","+str(graphics_format)+","+str(width)+","+
-                  str(height)+","+str(display)+","+str(all_tabs)+","+str(autosave_period) + ")")
+        self.send("exportGraphics("+filename+","+graphics_format+","+str(width)+","+
+                  str(height)+","+str(display)+","+b2str(all_tabs)+","+str(autosave_period) + ")")
 
 
     def screen_back(self):
@@ -235,7 +328,7 @@ class Client(object):
         """ returns the scalar names from kst """
 
         return_message = self.send("getScalarList()")
-        name_list = return_message.data().split('|')
+        name_list = self._decode_response(return_message).split('|')
         return [Scalar(self, name=n) for n in name_list]
 
     def new_generated_string(self, string, name=""):
@@ -357,28 +450,28 @@ class Client(object):
         """ returns vectors from kst. """
 
         return_message = self.send("getVectorList()")
-        name_list = return_message.data().split('|')
+        name_list = self._decode_response(return_message).split('|')
         return [VectorBase(self, name=n) for n in name_list]
 
     def get_data_vector_list(self):
         """ returns data vectors from kst. """
 
         return_message = self.send("getDataVectorList()")
-        name_list = return_message.data().split('|')
+        name_list = self._decode_response(return_message).split('|')
         return [DataVector(self, "", "", name=n, new=False) for n in name_list]
 
     def get_generated_vector_list(self):
         """ returns generated vectors from kst. """
 
         return_message = self.send("getGeneratedVectorList()")
-        name_list = return_message.data().split('|')
+        name_list = self._decode_response(return_message).split('|')
         return [GeneratedVector(self, name=n, new=False) for n in name_list]
 
     def get_editable_vector_list(self):
         """ returns editable vectors from kst. """
 
         return_message = self.send("getEditableVectorList()")
-        name_list = return_message.data().split('|')
+        name_list = self._decode_response(return_message).split('|')
         return [EditableVector(self, name=n, new=False) for n in name_list]
 
 
@@ -416,7 +509,7 @@ class Client(object):
         """ returns matrixes from kst. """
 
         return_message = self.send("getMatrixList()")
-        name_list = return_message.data().split('|')
+        name_list = self._decode_response(return_message).split('|')
         return [Matrix(self, name=n) for n in name_list]
 
 
@@ -606,7 +699,7 @@ class Client(object):
         See :class:`Label`
         """
         return_message = self.send("getLabelList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Label(self, "", name=n, new=False) for n in name_list]
 
 
@@ -635,7 +728,7 @@ class Client(object):
         See :class:`Box`
         """
         return_message = self.send("getBoxList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Box(self, name=n, new=False) for n in name_list]
 
 
@@ -659,7 +752,7 @@ class Client(object):
         See :class:`Legend`
         """
         return_message = self.send("getLegendList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Legend(self, 0, name=n, new=False) for n in name_list]
 
 
@@ -686,7 +779,7 @@ class Client(object):
         See :class:`Circle`
         """
         return_message = self.send("getCircleList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Circle(self, name=n, new=False) for n in name_list]
 
     def new_ellipse(self, pos=(0.1, 0.1), size=(0.1, 0.1),
@@ -714,7 +807,7 @@ class Client(object):
         See :class:`Ellipse`
         """
         return_message = self.send("getEllipseList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Ellipse(self, name=n, new=False) for n in name_list]
 
     def new_line(self, start=(0, 0), end=(1, 1),
@@ -740,7 +833,7 @@ class Client(object):
         See :class:`Line`
         """
         return_message = self.send("getLineList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Line(self, name=n, new=False) for n in name_list]
 
 
@@ -769,7 +862,7 @@ class Client(object):
         See :class:`Arrow`
         """
         return_message = self.send("getArrowList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Arrow(self, name=n, new=False) for n in name_list]
 
     def new_picture(self, filename, pos=(0.1, 0.1), width=0.1, rot=0, name=""):
@@ -792,7 +885,7 @@ class Client(object):
         See :class:`Picture`
         """
         return_message = self.send("getPictureList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Picture(self, "", name=n, new=False) for n in name_list]
 
     def new_SVG(self, filename, pos=(0.1, 0.1), width=0.1, rot=0, name=""):
@@ -815,7 +908,7 @@ class Client(object):
         See :class:`SVG`
         """
         return_message = self.send("getSVGList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [SVG(self, "", name=n, new=False) for n in name_list]
 
     def new_plot(self, pos=(0.1, 0.1), size=(0, 0), rot=0, font_size=0, columns=0,
@@ -844,7 +937,7 @@ class Client(object):
         See :class:`Plot`
         """
         return_message = self.send("getPlotList()")
-        name_list = return_message.data()[1:-1].split("][")
+        name_list = self._decode_response(return_message)[1:-1].split("][")
         return [Plot(self, name=n, new=False) for n in name_list]
 
     def set_datasource_option(self, option, value, filename, data_source="Ascii File"):
@@ -905,16 +998,18 @@ class Client(object):
             filename = "$DEFAULT"
 
         if isinstance(value, bool):
-            self.send("setDatasourceBoolConfig("+data_source+","+filename+","+option+","+
+            self.send("setDatasourceBoolConfig("+data_source+","+
+                      filename+","+option+","+
                       b2str(value)+")")
         elif isinstance(value, int):
-            self.send("setDatasourceIntConfig("+data_source+","+filename+","+option+","+
+            self.send("setDatasourceIntConfig("+data_source+","+
+                      filename+","+option+","+
                       str(value)+")")
         else:
-            v = value
-            v.replace(',', '`')
-            self.send("setDatasourceStringConfig("+data_source+","+filename+","+option+","+
-                      str(v)+")")
+            v = str(value).replace(',', '`')
+            self.send("setDatasourceStringConfig("+data_source+","+
+                      filename+","+option+","+
+                      v+")")
 
 
 
@@ -926,7 +1021,7 @@ class NamedObject(object):
 
     def set_name(self, name):
         """ Set the name of the object inside kst. """
-        self.client.send_si(self.handle, b2str("setName("+b2str(name)+")"))
+        self.client.send_si(self.handle, "setName("+name+")")
 
     def name(self):
         """ Returns the name of the object from inside kst. """
@@ -979,8 +1074,7 @@ class GeneratedString(String):
 
         if new:
             self.client.send("newGeneratedString()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_value(string)
             self.set_name(name)
@@ -989,7 +1083,7 @@ class GeneratedString(String):
 
     def set_value(self, val):
         """ set the value of the string inside kst. """
-        self.client.send_si(self.handle, b2str("setValue("+b2str(val)+")"))
+        self.client.send_si(self.handle, "setValue("+val+")")
 
 class DataSourceString(String):
     """ A string read from a data source inside kst.
@@ -1012,8 +1106,7 @@ class DataSourceString(String):
 
         if new:
             self.client.send("newDataString()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.change(filename, field)
         else:
             self.handle = name
@@ -1027,7 +1120,7 @@ class DataSourceString(String):
         :param field: the name of the field in the data source.
         :param frame: the frame number if the string is a function of frame number.
         """
-        self.client.send_si(self.handle, b2str("change("+b2str(filename)+","+b2str(field)+","+b2str(frame)+")"))
+        self.client.send_si(self.handle, "change("+filename+","+field+","+b2str(frame)+")")
 
 
 class Scalar(Object):
@@ -1061,8 +1154,7 @@ class GeneratedScalar(Scalar):
 
         if new:
             self.client.send("newGeneratedScalar()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_value(value)
             self.set_name(name)
@@ -1070,8 +1162,8 @@ class GeneratedScalar(Scalar):
             self.handle = name
 
     def set_value(self, val):
-        """ set the value of the string inside kst. """
-        self.client.send_si(self.handle, b2str("setValue("+b2str(val)+")"))
+        """ set the value of the scalar inside kst. """
+        self.client.send_si(self.handle, "setValue("+b2str(val)+")")
 
 
 class DataSourceScalar(Scalar):
@@ -1095,8 +1187,7 @@ class DataSourceScalar(Scalar):
 
         if new:
             self.client.send("newDataScalar()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.change(filename, field)
         else:
@@ -1145,8 +1236,7 @@ class VectorScalar(Scalar):
 
         if new:
             self.client.send("newVectorScalar()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.change(filename, field, frame)
         else:
@@ -1162,8 +1252,8 @@ class VectorScalar(Scalar):
         :param frame: which frame of the vector to read the scalar from.
                       frame = -1 reads from the end of the file.
         """
-        self.client.send_si(self.handle, b2str("change("+b2str(filename)+","+
-                                               b2str(field)+","+b2str(frame)+")"))
+        self.client.send_si(self.handle, "change("+filename+","+
+                                               field+","+b2str(frame)+")")
 
     def file(self):
         """ Returns the data source file name. """
@@ -1185,29 +1275,39 @@ class VectorBase(Object):
 
     def value(self, index):
         """  Returns element i of this vector. """
-        return self.client.send_si(self.handle, "value("+b2str(index)+")")
+        return float(self.client.send_si(self.handle, "value("+b2str(index)+")"))
 
     def length(self):
         """  Returns the number of samples in the vector. """
-        return self.client.send_si(self.handle, "length()")
+        result = self.client.send_si(self.handle, "length()")
+        result = result.strip()
+        if not result:
+            raise ValueError(f"Empty response from length() for handle {self.handle}")
+        return int(result)
 
     def min(self):
         """  Returns the minimum value in the vector. """
-        return self.client.send_si(self.handle, "min()")
+        return float(self.client.send_si(self.handle, "min()"))
 
     def mean(self):
         """  Returns the mean of the vector. """
-        return self.client.send_si(self.handle, "mean()")
+        return float(self.client.send_si(self.handle, "mean()"))
 
     def max(self):
         """  Returns the maximum value in the vector. """
-        return self.client.send_si(self.handle, "max()")
+        return float(self.client.send_si(self.handle, "max()"))
 
     def get_numpy_array(self):
         """ get a numpy array which contains the kst vector values """
-        with tempfile.NamedTemporaryFile() as f:
-            self.client.send_si(self.handle, "store(" + f.name + ")")
-            array = np.fromfile(f.name, dtype=np.float64)
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            temp_name = f.name
+        
+        try:
+            self.client.send_si(self.handle, "store(" + temp_name + ")")
+            array = np.fromfile(temp_name, dtype=np.float64)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
 
         return array
 
@@ -1246,8 +1346,7 @@ class DataVector(VectorBase):
 
         if new:
             self.client.send("newDataVector()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.change(filename, field, start, num_frames, skip, boxcarFirst)
         else:
             self.handle = name
@@ -1333,8 +1432,7 @@ class GeneratedVector(VectorBase):
 
         if new:
             self.client.send("newGeneratedVector()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.change(x0, x1, n)
             self.set_name(name)
@@ -1382,8 +1480,7 @@ class EditableVector(VectorBase):
                     self.client.send("load(" + f.name + ")")
                     os.unlink(f.name)
 
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_name(name)
         else:
@@ -1418,7 +1515,7 @@ class Matrix(Object):
 
     def length(self):
         """  Returns the number of elements in the matrix. """
-        return self.client.send_si(self.handle, "length()")
+        return int(self.client.send_si(self.handle, "length()"))
 
     def min(self):
         """  Returns the minimum value in the matrix. """
@@ -1500,8 +1597,7 @@ class DataMatrix(Matrix):
 
         if new:
             self.client.send("newDataMatrix()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.change(filename, field, start_x, start_y, num_x, num_y, min_x, min_y, dx, dy)
         else:
@@ -1521,8 +1617,8 @@ class DataMatrix(Matrix):
                       the left/bottom of the Matrix
         :param dx/dy: Hint to Images of the spacing between points.
         """
-        self.client.send_si(self.handle, "change("+b2str(filename)+","+
-                            b2str(field)+","+b2str(start_x)+","+
+        self.client.send_si(self.handle, "change("+filename+","+
+                            field+","+b2str(start_x)+","+
                             b2str(start_y)+","+b2str(num_x)+","+b2str(num_y)+","+
                             b2str(min_x)+","+b2str(min_y)+","+b2str(dx)+","+
                             b2str(dy)+")")
@@ -1574,8 +1670,7 @@ class EditableMatrix(Matrix):
                     np_array.tofile(f.name)
                     self.client.send("load(" + f.name + ","+b2str(nx)+","+b2str(ny)+")")
 
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_name(name)
         else:
@@ -1647,8 +1742,7 @@ class Curve(Relation):
             self.client.send("newCurve()")
             self.client.send("setXVector("+x_vector.handle+")")
             self.client.send("setYVector("+y_vector.handle+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -1689,7 +1783,8 @@ class Curve(Relation):
         Colors are given by a name such as ``red`` or a hex number such
         as ``#FF0000``.
         """
-        self.client.send_si(self.handle, "setColor("+color+")")
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setColor("+str(color)+")")
 
     def set_head_color(self, color):
         """ Set the color of the Head marker, if any.
@@ -1697,7 +1792,8 @@ class Curve(Relation):
         Colors are given by a name such as ``red`` or a hex number such
         as ``#FF0000``.
         """
-        self.client.send_si(self.handle, "setHeadColor("+color+")")
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setHeadColor("+str(color)+")")
 
     def set_bar_fill_color(self, color):
         """ Set the fill color of the histogram bars, if any.
@@ -1705,7 +1801,8 @@ class Curve(Relation):
         Colors are given by a name such as ``red`` or a hex number such
         as ``#FF0000``.
         """
-        self.client.send_si(self.handle, "setBarFillColor("+color+")")
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setBarFillColor("+str(color)+")")
 
     def set_has_points(self, has=True):
         """ Set whether individual points are drawn on the curve """
@@ -1798,19 +1895,19 @@ class Curve(Relation):
 
     def has_points(self):
         """ Returns True if the line has points. """
-        return self.client.send_si(self.handle, "hasPoints()") == "True"
+        return self.client.send_si_bool(self.handle, "hasPoints()")
 
     def has_lines(self):
         """ Returns True if the line has lines. """
-        return self.client.send_si(self.handle, "hasLines()") == "True"
+        return self.client.send_si_bool(self.handle, "hasLines()")
 
     def has_bars(self):
         """ Returns True if the line has historgram bars. """
-        return self.client.send_si(self.handle, "hasBars()") == "True"
+        return self.client.send_si_bool(self.handle, "hasBars()")
 
     def has_head(self):
         """ Returns True if the last point has a special marker. """
-        return self.client.send_si(self.handle, "hasHead()") == "True"
+        return self.client.send_si_bool(self.handle, "hasHead()")
 
     def line_width(self):
         """ Returns the width of the line. """
@@ -1911,8 +2008,7 @@ class Image(Relation):
         if new:
             self.client.send("newImage()")
             self.client.send("setMatrix("+matrix.handle+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
 
         else:
@@ -1980,8 +2076,7 @@ class Equation(Object):
             self.client.send("setEquation(" + equation + ")")
             self.client.send("setInputVector(X,"+xvector.handle+")")
             self.client.send("interpolateVectors("+b2str(interpolate)+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2042,8 +2137,7 @@ class Histogram(Object):
                              b2str(normalization) + "," +
                              b2str(auto_bin) + ")")
 
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2169,10 +2263,9 @@ class Spectrum(Object):
                              rate_units + "," +
                              b2str(apodize_function) + "," +
                              b2str(sigma) + "," +
-                             b2str(output_type) + "," + ")")
+                             b2str(output_type) + ")")
 
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2295,8 +2388,7 @@ class CrossSpectrum(Object):
                 tmpscalar2 = self.client.new_generated_scalar(sample_rate)
                 self.client.send("setInputScalar(Scalar In Sample Rate,"+tmpscalar2.handle+")")
 
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2345,8 +2437,7 @@ class SumFilter(Filter):
             self.client.send("newPlugin(Cumulative Sum)")
             self.client.send("setInputVector(Vector In,"+yvector.handle+")")
             self.client.send("setInputScalar(Scale Scalar,"+step_dX.handle+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2379,8 +2470,7 @@ class FlagFilter(Filter):
             else:
                 self.client.send("setProperty(ValidIsZero,false)")
 
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2441,8 +2531,7 @@ class LinearFit(Fit):
 
             self.client.send("setInputVector(X Vector,"+xvector.handle+")")
             self.client.send("setInputVector(Y Vector,"+yvector.handle+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2478,8 +2567,7 @@ class PolynomialFit(Fit):
             self.client.send("setInputVector(X Vector,"+xvector.handle+")")
             self.client.send("setInputVector(Y Vector,"+yvector.handle+")")
             self.client.send("setInputScalar(Order Scalar,"+order.handle+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             self.set_name(name)
         else:
             self.handle = name
@@ -2516,7 +2604,8 @@ class ViewItem(NamedObject):
         as ``#FF0000``.
 
         """
-        self.client.send_si(self.handle, b2str("setFillColor("+b2str(color)+")"))
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setFillColor("+str(color)+")")
 
     def set_fill_style(self, style):
         """ Set the background fill style.
@@ -2559,7 +2648,8 @@ class ViewItem(NamedObject):
         Colors are given by a name such as ``red`` or a hex number
         such as ``#FF0000``.
         """
-        self.client.send_si(self.handle, "setStrokeBrushColor("+b2str(color)+")")
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setStrokeBrushColor("+str(color)+")")
 
     def set_stroke_brush_style(self, style):
         """ Set the brush style for lines for the item.
@@ -2736,8 +2826,8 @@ class ViewItem(NamedObject):
         n = 0
 
         if len(args) == 1:
-            h = args[0]/100
-            w = (args[0]%100)/10
+            h = args[0]//100
+            w = (args[0]%100)//10
             n = args[0]%10
         elif len(args) == 3:
             h = args[0]
@@ -2747,7 +2837,7 @@ class ViewItem(NamedObject):
             w = h = n = 1
 
         x = (n-1)%w
-        y = (n-1)/w
+        y = (n-1)//w
 
         size = (1.0/w, 1.0/h)
         pos = (x/float(w)+0.5/w, y/float(h)+0.5/h)
@@ -2835,8 +2925,7 @@ class Label(ViewItem):
 
         if new:
             self.client.send("newLabel()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_text(text)
             self.set_label_font_size(font_size)
@@ -2882,7 +2971,7 @@ class Label(ViewItem):
 
         Other:``x^y``, ``x_y``, ``\\t``, ``\\n``, ``\\[``
         """
-        self.client.send_si(self.handle, b2str("setLabel("+b2str(text)+")"))
+        self.client.send_si(self.handle, "setLabel("+text+")")
 
     def set_label_font_size(self, size):
         """ size of the label in points, when the printed at the reference size."""
@@ -2905,11 +2994,13 @@ class Label(ViewItem):
     def set_font_color(self, color):
         """ Colors are given by a name such as ``red`` or a hex number such
         as ``#FF0000`` """
-        self.client.send_si(self.handle, b2str("setLabelColor("+b2str(color)+")"))
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setLabelColor("+str(color)+")")
 
     def set_font_family(self, family):
         """ set the font family.  eg, TimeNewRoman. """
-        self.client.send_si(self.handle, b2str("setFontFamily("+b2str(family)+")"))
+        # Note: KST expects font family without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setFontFamily("+str(family)+")")
 
 
 class Legend(ViewItem):
@@ -2930,8 +3021,7 @@ class Legend(ViewItem):
 
         if new:
             self.client.send("newLegend("+plot.name()+")")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
         else:
             self.handle = name
 
@@ -2956,11 +3046,13 @@ class Legend(ViewItem):
     def set_font_color(self, color):
         """ Colors are given by a name such as ``red`` or a hex number such
         as ``#FF0000`` """
-        self.client.send_si(self.handle, b2str("setLegendColor("+b2str(color)+")"))
+        # Note: KST expects color without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setLegendColor("+str(color)+")")
 
     def set_font_family(self, family):
         """ set the font family.  eg, TimeNewRoman. """
-        self.client.send_si(self.handle, b2str("setFontFamily("+b2str(family)+")"))
+        # Note: KST expects font family without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setFontFamily("+str(family)+")")
 
 
 class Box(ViewItem):
@@ -3004,8 +3096,7 @@ class Box(ViewItem):
 
         if new:
             self.client.send("newBox()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_pos(pos)
             self.set_size(size)
@@ -3062,8 +3153,7 @@ class Circle(ViewItem):
 
         if new:
             self.client.send("newCircle()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_pos(pos)
             self.set_diameter(diameter)
@@ -3123,8 +3213,7 @@ class Ellipse(ViewItem):
 
         if new:
             self.client.send("newEllipse()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_pos(pos)
             self.set_size(size)
@@ -3187,9 +3276,7 @@ class Line(ViewItem):
 
         if new:
             self.client.send("newLine()")
-            self.handle = self.client.send("endEdit()")
-
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_endpoints(start, end)
 
@@ -3262,8 +3349,7 @@ class Arrow(ViewItem):
 
         if new:
             self.client.send("newArrow()")
-            self.handle = self.client.send("endEdit()")
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_endpoints(start, end)
             #self.set_pos(pos)
@@ -3347,10 +3433,8 @@ class Picture(ViewItem):
         ViewItem.__init__(self, client)
 
         if new:
-            self.client.send("newPicture("+b2str(filename)+")")
-            self.handle = self.client.send("endEdit()")
-
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.client.send("newPicture("+filename+")")
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_pos(pos)
             self.set_width(width)
@@ -3371,7 +3455,7 @@ class Picture(ViewItem):
     def set_picture(self, pic):
         """ BUG: aspect ratio is not changed. There is no parellel for this
         function within the kst GUI. """
-        self.client.send_si(self.handle, b2str("setPicture("+b2str(pic)+")"))
+        self.client.send_si(self.handle, "setPicture("+pic+")")
 
 
 class SVG(ViewItem):
@@ -3400,10 +3484,8 @@ class SVG(ViewItem):
         ViewItem.__init__(self, client)
 
         if new:
-            self.client.send("newSvgItem("+b2str(filename)+")")
-            self.handle = self.client.send("endEdit()")
-
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.client.send("newSvgItem("+filename+")")
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
 
             self.set_pos(pos)
             self.set_width(width)
@@ -3478,9 +3560,7 @@ class Plot(ViewItem):
                 self.client.send("addToCurrentView(Auto,2)")
             else:
                 self.client.send("addToCurrentView(Protect,2)")
-            self.handle = self.client.send("endEdit()")
-
-            self.handle.remove(0, self.handle.indexOf("ing ")+4)
+            self.handle = self.client._extract_handle(self.client.send("endEdit()"))
             if size != (0, 0):
                 self.set_size(size)
                 self.set_pos(pos)
@@ -3565,7 +3645,8 @@ class Plot(ViewItem):
         The font will be italic if parameter 'italic' is set to 'italic'
         or 'True'.
         """
-        self.client.send_si(self.handle, "setGlobalFont("+family+","+
+        # Note: KST expects font family without quotes, unlike other string parameters
+        self.client.send_si(self.handle, "setGlobalFont("+str(family)+","+
                             b2str(font_size)+","+b2str(bold)+","+b2str(italic)+")")
 
     def set_top_label(self, label=""):
@@ -3705,19 +3786,17 @@ class Button(ViewItem):
         self.client.send("newButton()")
         self.client.send("setPos("+b2str(posX)+","+b2str(posY)+")")
         self.client.send("setSize("+b2str(sizeX)+","+b2str(sizeY)+")")
-        self.client.send("setText("+b2str(text)+")")
+        self.client.send("setText("+text+")")
         self.client.send("setRotation("+b2str(rot)+")")
-        self.handle = self.client.send("endEdit()")
-
-        self.handle.remove(0, self.handle.indexOf("ing ")+4)
+        self.handle = self.client._extract_handle(self.client.send("endEdit()"))
         socket.connectToServer(client.server_name)
         socket.waitForConnected(300)
-        socket.write(b2str("attachTo("+self.handle+")"))
+        socket.write(("attachTo("+self.handle+")").encode('utf-8'))
 
     def set_text(self, text):
         """ Sets the text of the button. """
         self.client.send("beginEdit("+self.handle+")")
-        self.client.send("setText("+b2str(text)+")")
+        self.client.send("setText("+text+")")
         self.client.send("endEdit()")
 
 
@@ -3736,17 +3815,16 @@ class LineEdit(ViewItem):
         self.client.send("newLineEdit()")
         self.client.send("setPos("+b2str(posX)+","+b2str(posY)+")")
         self.client.send("setSize("+b2str(sizeX)+","+b2str(sizeY)+")")
-        self.client.send("setText("+b2str(text)+")")
+        self.client.send("setText("+text+")")
         self.client.send("setRotation("+b2str(rot)+")")
-        self.handle = self.client.send("endEdit()")
-
-        self.handle.remove(0, self.handle.indexOf("ing ")+4)
-        socket.connectToServer(b2str(client.server_name))
+        self.handle = self.client._extract_handle(self.client.send("endEdit()"))
+        socket.connectToServer(client.server_name)
         socket.waitForConnected(300)
-        socket.write(b2str("attachTo("+self.handle+")"))
+        socket.write(("attachTo("+self.handle+")").encode('utf-8'))
 
     def set_text(self, text):
         """ Sets the text of the line edit. """
         self.client.send("beginEdit("+self.handle+")")
-        self.client.send("setText("+b2str(text)+")")
+        self.client.send("setText("+text+")")
         self.client.send("endEdit()")
+

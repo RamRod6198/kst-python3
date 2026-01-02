@@ -1,5 +1,11 @@
-#!/usr/bin/python
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 import numpy as np
 
 def mandelbrot( h,w, maxit=10 ):
@@ -10,7 +16,7 @@ def mandelbrot( h,w, maxit=10 ):
   z = c
   divtime = maxit + np.zeros(z.shape, dtype=np.float64)
 
-  for i in xrange(maxit):
+  for i in range(maxit):
     z  = z**2 + c
     diverge = z*np.conj(z) > 2**2            # who is diverging
     div_now = diverge & (divtime==maxit)  # who is diverging now
@@ -30,6 +36,6 @@ P.add(I)
 # print out name and size of all matrixes
 matrixes = client.get_matrix_list()
 for matrix in matrixes :
-  print matrix.name(), matrix.width(), matrix.height()
+  print(matrix.name(), matrix.width(), matrix.height())
 
 

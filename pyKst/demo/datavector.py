@@ -1,5 +1,11 @@
-#!/usr/bin/python2.7
-import pykst as kst
+#!/usr/bin/env python3
+try:
+    import pykst as kst
+except ImportError:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 
 client=kst.Client("TestVectors")
 V1=client.new_data_vector("./demodata.dat",
@@ -20,4 +26,4 @@ V2.change_frames(1000, 500, 0, False)
 vectors = client.get_data_vector_list()
 
 for vector in vectors:
-  print vector.name(), vector.field()
+  print(vector.name(), vector.field())
