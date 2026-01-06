@@ -5,13 +5,11 @@
 import sys
 import os
 
-# Ensure we can find pykst regardless of working directory
-script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(script_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
-
-import pykst as kst
+try:
+    import pykst as kst
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    import pykst as kst
 
 # Use absolute path for data file since KST has its own working directory
 datafile = os.path.join(script_dir, "demodata.dat")
